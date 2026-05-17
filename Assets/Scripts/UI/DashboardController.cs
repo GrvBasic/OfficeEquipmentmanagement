@@ -6,20 +6,24 @@ using OEMS.Core;
 namespace OEMS.UI
 {
     /// <summary>
-    /// Main menu / dashboard. Shows summary statistics and navigation buttons.
+    /// Dashboard — at-a-glance statistics and navigation to all modules.
+    /// Stats updated every time the panel becomes visible.
     /// </summary>
     public class DashboardController : MonoBehaviour
     {
-        [Header("Stat Texts")]
+        [Header("Stat Tiles")]
         public TextMeshProUGUI employeeCountText;
-        public TextMeshProUGUI itemTypesText;
+        public TextMeshProUGUI categoryCountText;
+        public TextMeshProUGUI itemCountText;           // total items/units in system
         public TextMeshProUGUI availableQtyText;
         public TextMeshProUGUI assignedQtyText;
+        public TextMeshProUGUI activeAssignmentsText;
         public TextMeshProUGUI damagedQtyText;
         public TextMeshProUGUI consumedQtyText;
 
         [Header("Navigation Buttons")]
         public Button registerEmployeeButton;
+        public Button manageCategoriesButton;   // NEW
         public Button addInventoryButton;
         public Button assignItemButton;
         public Button returnItemButton;
@@ -35,13 +39,21 @@ namespace OEMS.UI
 
         private void HookUpButtons()
         {
-            if (registerEmployeeButton)  { registerEmployeeButton.onClick.RemoveAllListeners(); registerEmployeeButton.onClick.AddListener(() => UIManager.Instance.ShowRegistration()); }
-            if (addInventoryButton)      { addInventoryButton.onClick.RemoveAllListeners();     addInventoryButton.onClick.AddListener(() => UIManager.Instance.ShowInventory()); }
-            if (assignItemButton)        { assignItemButton.onClick.RemoveAllListeners();       assignItemButton.onClick.AddListener(() => UIManager.Instance.ShowAssignment()); }
-            if (returnItemButton)        { returnItemButton.onClick.RemoveAllListeners();       returnItemButton.onClick.AddListener(() => UIManager.Instance.ShowReturn()); }
-            if (viewEmployeesButton)     { viewEmployeesButton.onClick.RemoveAllListeners();    viewEmployeesButton.onClick.AddListener(() => UIManager.Instance.ShowViewEmployees()); }
-            if (viewInventoryButton)     { viewInventoryButton.onClick.RemoveAllListeners();    viewInventoryButton.onClick.AddListener(() => UIManager.Instance.ShowViewInventory()); }
-            if (viewAssignmentsButton)   { viewAssignmentsButton.onClick.RemoveAllListeners();  viewAssignmentsButton.onClick.AddListener(() => UIManager.Instance.ShowViewAssignments()); }
+            Wire(registerEmployeeButton,  () => UIManager.Instance.ShowRegistration());
+            Wire(manageCategoriesButton,  () => UIManager.Instance.ShowCategory());
+            Wire(addInventoryButton,      () => UIManager.Instance.ShowInventory());
+            Wire(assignItemButton,        () => UIManager.Instance.ShowAssignment());
+            Wire(returnItemButton,        () => UIManager.Instance.ShowReturn());
+            Wire(viewEmployeesButton,     () => UIManager.Instance.ShowViewEmployees());
+            Wire(viewInventoryButton,     () => UIManager.Instance.ShowViewInventory());
+            Wire(viewAssignmentsButton,   () => UIManager.Instance.ShowViewAssignments());
+        }
+
+        private static void Wire(Button btn, UnityEngine.Events.UnityAction action)
+        {
+            if (btn == null) return;
+            btn.onClick.RemoveAllListeners();
+            btn.onClick.AddListener(action);
         }
 
         public void RefreshStats()
@@ -49,12 +61,14 @@ namespace OEMS.UI
             var dm = DataManager.Instance;
             if (dm == null) return;
 
-            if (employeeCountText) employeeCountText.text = dm.GetTotalEmployeeCount().ToString();
-            if (itemTypesText)     itemTypesText.text     = dm.GetTotalItemTypes().ToString();
-            if (availableQtyText)  availableQtyText.text  = dm.GetTotalAvailableQuantity().ToString();
-            if (assignedQtyText)   assignedQtyText.text   = dm.GetTotalAssignedQuantity().ToString();
-            if (damagedQtyText)    damagedQtyText.text    = dm.GetTotalDamagedQuantity().ToString();
-            if (consumedQtyText)   consumedQtyText.text   = dm.GetTotalConsumedQuantity().ToString();
+            if (employeeCountText)     employeeCountText.text     = dm.GetTotalEmployeeCount().ToString();
+            if (categoryCountText)     categoryCountText.text     = dm.GetTotalCategoryCount().ToString();
+            if (itemCountText)         itemCountText.text         = dm.GetTotalItemTypeCount().ToString();
+            if (availableQtyText)      availableQtyText.text      = dm.GetTotalAvailableQuantity().ToString();
+            if (assignedQtyText)       assignedQtyText.text       = dm.GetTotalAssignedCount().ToString();
+            if (activeAssignmentsText) activeAssignmentsText.text = dm.GetActiveAssignmentCount().ToString();
+            if (damagedQtyText)        damagedQtyText.text        = dm.GetTotalDamagedCount().ToString();
+            if (consumedQtyText)       consumedQtyText.text       = dm.GetTotalConsumedCount().ToString();
         }
     }
 }

@@ -1,291 +1,635 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.RegularExpressions;
 using UnityEngine;
 using OEMS.Models;
 
 namespace OEMS.Core
 {
     /// <summary>
-    /// Singleton that handles ALL data operations and file-based local storage.
-    /// Per project synopsis: "All information is stored locally in text file".
-    /// Uses Unity's Application.persistentDataPath which works on Android/Windows/macOS.
+    /// Singleton that owns ALL data operations and file-based local storage.
+    ///
+    /// STORAGE LAYOUT (database-style):
+    ///   Each ER-diagram entity lives in its OWN JSON file under Application.persistentDataPath:
+    ///     • oems_employees.json   → EmployeeDatabase    (Employee table + EMP-XXXX counter)
+    ///     • oems_inventory.json   → InventoryDatabase   (InventoryCategory + Inventory tables
+    ///                                                    + ASSET-XXXX / BATCH-XXXX counters)
+    ///     • oems_assignments.json → AssignmentDatabase  (Assignment table + ASN-XXXX counter)
+    ///
+    ///   Each table is loaded/saved INDEPENDENTLY — mirroring how a real RDBMS keeps
+    ///   tables in separate files. Save operations only rewrite the file(s) actually
+    ///   affected (e.g. AddEmployee only rewrites oems_employees.json).
+    ///
+    /// MIGRATION:
+    ///   On startup, if the legacy monolithic oems_data.txt exists and none of the
+    ///   new files do yet, it is imported into the three new tables, then renamed
+    ///   to oems_data.txt.legacy so it isn't re-imported.
+    ///
+    /// KEY DESIGN DECISIONS:
+    ///   - IndispensableItem  = one record per physical UNIT (ASSET-XXXX).
+    ///     Adding "Dell Laptop x3" creates three IndispensableItem records.
+    ///   - DispensableItem    = one record per stock BATCH (BATCH-XXXX).
+    ///     Adding "Blue Pen x50" creates one DispensableItem record with qty=50.
+    ///   - Assignment.assignmentStatus (Assigned/Returned) is separate from
+    ///     Assignment.itemCondition (Good/Damaged/Consumed/NA) per ER diagram.
     /// </summary>
     public class DataManager : MonoBehaviour
     {
         public static DataManager Instance { get; private set; }
 
-        private const string DATA_FILE_NAME = "oems_data.txt";
-        private string DataFilePath { get { return Path.Combine(Application.persistentDataPath, DATA_FILE_NAME); } }
+        // ── Per-table file names ──────────────────────────────────────────────
+        private const string EMPLOYEE_FILE_NAME    = "oems_employees.json";
+        private const string INVENTORY_FILE_NAME   = "oems_inventory.json";
+        private const string ASSIGNMENT_FILE_NAME  = "oems_assignments.json";
+        private const string LEGACY_FILE_NAME      = "oems_data.txt";
 
-        private DatabaseWrapper db = new DatabaseWrapper();
+        private string EmployeeFilePath   { get { return Path.Combine(Application.persistentDataPath, EMPLOYEE_FILE_NAME);   } }
+        private string InventoryFilePath  { get { return Path.Combine(Application.persistentDataPath, INVENTORY_FILE_NAME);  } }
+        private string AssignmentFilePath { get { return Path.Combine(Application.persistentDataPath, ASSIGNMENT_FILE_NAME); } }
+        private string LegacyFilePath     { get { return Path.Combine(Application.persistentDataPath, LEGACY_FILE_NAME);     } }
 
-        // ----- Public read-only access to lists -----
-        public List<Employee>          Employees           { get { return db.employees; } }
-        public List<DispensableItem>   DispensableItems    { get { return db.dispensableItems; } }
-        public List<IndispensableItem> IndispensableItems  { get { return db.indispensableItems; } }
-        public List<Assignment>        Assignments         { get { return db.assignments; } }
+        // ── In-memory tables ──────────────────────────────────────────────────
+        private EmployeeDatabase   empDb    = new EmployeeDatabase();
+        private InventoryDatabase  invDb    = new InventoryDatabase();
+        private AssignmentDatabase assignDb = new AssignmentDatabase();
 
-        // ============================================================
+        // ── Read-only access ──────────────────────────────────────────────────
+        public List<InventoryCategory>  Categories         { get { return invDb.categories;         } }
+        public List<Employee>           Employees          { get { return empDb.employees;          } }
+        public List<DispensableItem>    DispensableItems   { get { return invDb.dispensableItems;   } }
+        public List<IndispensableItem>  IndispensableItems { get { return invDb.indispensableItems; } }
+        public List<Assignment>         Assignments        { get { return assignDb.assignments;     } }
+
+        // ═════════════════════════════════════════════════════════════════════
         // SINGLETON SETUP
-        // ============================================================
+        // ═════════════════════════════════════════════════════════════════════
         private void Awake()
         {
-            if (Instance != null && Instance != this)
-            {
-                Destroy(gameObject);
-                return;
-            }
+            if (Instance != null && Instance != this) { Destroy(gameObject); return; }
             Instance = this;
             DontDestroyOnLoad(gameObject);
             LoadData();
         }
 
-        // ============================================================
-        // FILE I/O
-        // ============================================================
-        public void SaveData()
+        // ═════════════════════════════════════════════════════════════════════
+        // FILE I/O — per-table save/load
+        // ═════════════════════════════════════════════════════════════════════
+
+        /// <summary>Atomic write: serialise, write to .tmp, then move into place.</summary>
+        private void WriteJsonAtomic(string path, string json)
+        {
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, json);
+            if (File.Exists(path)) File.Delete(path);
+            File.Move(tmp, path);
+        }
+
+        public void SaveEmployees()
         {
             try
             {
-                string json = JsonUtility.ToJson(db, true);
-                File.WriteAllText(DataFilePath, json);
-                Debug.Log("[OEMS] Data saved to: " + DataFilePath);
+                WriteJsonAtomic(EmployeeFilePath, JsonUtility.ToJson(empDb, true));
+                Debug.Log("[OEMS] Saved employees → " + EmployeeFilePath);
             }
-            catch (System.Exception e)
+            catch (Exception e) { Debug.LogError("[OEMS] SaveEmployees failed: " + e.Message); }
+        }
+
+        public void SaveInventory()
+        {
+            try
             {
-                Debug.LogError("[OEMS] Save failed: " + e.Message);
+                WriteJsonAtomic(InventoryFilePath, JsonUtility.ToJson(invDb, true));
+                Debug.Log("[OEMS] Saved inventory → " + InventoryFilePath);
             }
+            catch (Exception e) { Debug.LogError("[OEMS] SaveInventory failed: " + e.Message); }
+        }
+
+        public void SaveAssignments()
+        {
+            try
+            {
+                WriteJsonAtomic(AssignmentFilePath, JsonUtility.ToJson(assignDb, true));
+                Debug.Log("[OEMS] Saved assignments → " + AssignmentFilePath);
+            }
+            catch (Exception e) { Debug.LogError("[OEMS] SaveAssignments failed: " + e.Message); }
+        }
+
+        /// <summary>Save every table. Use only when multiple tables changed at once
+        /// (ResetAllData, legacy migration). Otherwise prefer the targeted Save* methods.</summary>
+        public void SaveData()
+        {
+            SaveEmployees();
+            SaveInventory();
+            SaveAssignments();
         }
 
         public void LoadData()
         {
+            // 1. One-time migration from the old single file (if present and new files absent).
+            TryMigrateLegacyFile();
+
+            // 2. Load each table independently.
+            empDb    = LoadTable<EmployeeDatabase>  (EmployeeFilePath,   "employees");
+            invDb    = LoadTable<InventoryDatabase> (InventoryFilePath,  "inventory");
+            assignDb = LoadTable<AssignmentDatabase>(AssignmentFilePath, "assignments");
+
+            // 3. Seed default categories on first run (only if inventory file was empty).
+            if (invDb.categories == null || invDb.categories.Count == 0)
+            {
+                invDb.categories = DefaultCategories.Get();
+                SaveInventory();
+            }
+        }
+
+        /// <summary>Generic per-table loader. Falls back to a fresh instance on miss / error.</summary>
+        private T LoadTable<T>(string path, string label) where T : class, new()
+        {
             try
             {
-                if (File.Exists(DataFilePath))
+                if (File.Exists(path))
                 {
-                    string json = File.ReadAllText(DataFilePath);
-                    db = JsonUtility.FromJson<DatabaseWrapper>(json);
-                    if (db == null) db = new DatabaseWrapper();
-                    Debug.Log("[OEMS] Data loaded from: " + DataFilePath);
+                    string json = File.ReadAllText(path);
+                    T loaded = JsonUtility.FromJson<T>(json);
+                    if (loaded == null) loaded = new T();
+                    Debug.Log("[OEMS] Loaded " + label + " ← " + path);
+                    return loaded;
                 }
-                else
-                {
-                    db = new DatabaseWrapper();
-                    Debug.Log("[OEMS] No existing data, starting fresh.");
-                }
+                Debug.Log("[OEMS] No " + label + " file — starting fresh.");
             }
-            catch (System.Exception e)
+            catch (Exception e)
             {
-                Debug.LogError("[OEMS] Load failed: " + e.Message);
-                db = new DatabaseWrapper();
+                Debug.LogError("[OEMS] Load " + label + " failed: " + e.Message);
+            }
+            return new T();
+        }
+
+        /// <summary>
+        /// If a legacy oems_data.txt exists and the new per-table files don't, import it
+        /// into the three new tables, then rename the legacy file so it isn't re-imported.
+        /// </summary>
+        private void TryMigrateLegacyFile()
+        {
+            try
+            {
+                if (!File.Exists(LegacyFilePath)) return;
+                bool anyNewExists = File.Exists(EmployeeFilePath)
+                                 || File.Exists(InventoryFilePath)
+                                 || File.Exists(AssignmentFilePath);
+                if (anyNewExists) return;   // new files take precedence; don't overwrite
+
+                Debug.Log("[OEMS] Migrating legacy oems_data.txt → split files…");
+                string json = File.ReadAllText(LegacyFilePath);
+                var legacy = JsonUtility.FromJson<DatabaseWrapper>(json);
+                if (legacy == null) { Debug.LogWarning("[OEMS] Legacy file empty/corrupt — skipping migration."); return; }
+
+                empDb = new EmployeeDatabase
+                {
+                    employees       = legacy.employees       ?? new List<Employee>(),
+                    employeeCounter = legacy.employeeCounter
+                };
+                invDb = new InventoryDatabase
+                {
+                    categories         = legacy.categories         ?? new List<InventoryCategory>(),
+                    dispensableItems   = legacy.dispensableItems   ?? new List<DispensableItem>(),
+                    indispensableItems = legacy.indispensableItems ?? new List<IndispensableItem>(),
+                    assetCounter       = legacy.assetCounter,
+                    batchCounter       = legacy.batchCounter
+                };
+                assignDb = new AssignmentDatabase
+                {
+                    assignments       = legacy.assignments       ?? new List<Assignment>(),
+                    assignmentCounter = legacy.assignmentCounter
+                };
+
+                SaveData();
+                File.Move(LegacyFilePath, LegacyFilePath + ".legacy");
+                Debug.Log("[OEMS] Migration complete — legacy file renamed to oems_data.txt.legacy.");
+            }
+            catch (Exception e)
+            {
+                Debug.LogError("[OEMS] Legacy migration failed: " + e.Message);
             }
         }
 
         public void ResetAllData()
         {
-            db = new DatabaseWrapper();
+            empDb    = new EmployeeDatabase();
+            invDb    = new InventoryDatabase { categories = DefaultCategories.Get() };
+            assignDb = new AssignmentDatabase();
             SaveData();
         }
 
-        // ============================================================
-        // EMPLOYEE OPERATIONS  (Registration Module)
-        // ============================================================
+        // ═════════════════════════════════════════════════════════════════════
+        // CATEGORY OPERATIONS  (inventory file)
+        // ═════════════════════════════════════════════════════════════════════
+        public bool AddCategory(InventoryCategory cat)
+        {
+            if (cat == null || string.IsNullOrEmpty(cat.categoryName)) return false;
+            if (FindCategory(cat.categoryName) != null) return false;
+            invDb.categories.Add(cat);
+            SaveInventory();
+            return true;
+        }
+
+        public bool RemoveCategory(string categoryName)
+        {
+            // Block if any item is using this category
+            if (invDb.dispensableItems.Exists(x => x.categoryName == categoryName)) return false;
+            if (invDb.indispensableItems.Exists(x => x.categoryName == categoryName)) return false;
+            int n = invDb.categories.RemoveAll(c => c.categoryName == categoryName);
+            if (n > 0) { SaveInventory(); return true; }
+            return false;
+        }
+
+        public InventoryCategory FindCategory(string categoryName)
+        {
+            return invDb.categories.Find(c => c.categoryName == categoryName);
+        }
+
+        // ═════════════════════════════════════════════════════════════════════
+        // EMPLOYEE OPERATIONS  (employee file)
+        // ═════════════════════════════════════════════════════════════════════
         public string GenerateEmployeeID()
         {
-            string id = "EMP" + db.employeeCounter.ToString("D4");
-            db.employeeCounter++;
+            string id = "EMP-" + empDb.employeeCounter.ToString("D4");
+            empDb.employeeCounter++;
             return id;
         }
 
         public bool AddEmployee(Employee e)
         {
             if (e == null || string.IsNullOrEmpty(e.employeeID)) return false;
-            if (FindEmployee(e.employeeID) != null) return false;   // duplicate
-            db.employees.Add(e);
-            SaveData();
+            if (FindEmployee(e.employeeID) != null) return false;
+            empDb.employees.Add(e);
+            SaveEmployees();
+            return true;
+        }
+
+        /// <summary>Update mutable fields on an existing employee record.</summary>
+        public bool UpdateEmployee(string employeeID, string firstName, string lastName,
+                                   string email, string department)
+        {
+            var emp = FindEmployee(employeeID);
+            if (emp == null) return false;
+            emp.firstName  = firstName;
+            emp.lastName   = lastName;
+            emp.email      = email;
+            emp.department = department;
+            SaveEmployees();
             return true;
         }
 
         public bool RemoveEmployee(string employeeID)
         {
-            // can't remove employee with active assignments
-            foreach (var a in db.assignments)
-            {
-                if (a.employeeID == employeeID && a.status == AssignmentStatus.Active)
-                    return false;
-            }
-            int removed = db.employees.RemoveAll(x => x.employeeID == employeeID);
-            if (removed > 0) { SaveData(); return true; }
+            // Block removal if any active assignments remain
+            if (assignDb.assignments.Exists(a =>
+                    a.employeeID == employeeID &&
+                    a.assignmentStatus == AssignmentStatus.Assigned))
+                return false;
+            int n = empDb.employees.RemoveAll(x => x.employeeID == employeeID);
+            if (n > 0) { SaveEmployees(); return true; }
             return false;
         }
 
         public Employee FindEmployee(string employeeID)
         {
-            return db.employees.Find(x => x.employeeID == employeeID);
+            return empDb.employees.Find(x => x.employeeID == employeeID);
         }
 
-        // ============================================================
-        // INVENTORY OPERATIONS  (Inventory Management Module)
-        // ============================================================
-        public string GenerateItemID()
+        /// <summary>Simple RFC-5322-ish email validation.</summary>
+        public static bool IsValidEmail(string email)
         {
-            string id = "ITM" + db.itemCounter.ToString("D4");
-            db.itemCounter++;
+            if (string.IsNullOrEmpty(email)) return false;
+            return Regex.IsMatch(email, @"^[^@\s]+@[^@\s]+\.[^@\s]+$",
+                                 RegexOptions.IgnoreCase);
+        }
+
+        // ═════════════════════════════════════════════════════════════════════
+        // INVENTORY — ID GENERATION  (inventory file)
+        // ═════════════════════════════════════════════════════════════════════
+        public string GenerateAssetID()
+        {
+            string id = "ASSET-" + invDb.assetCounter.ToString("D4");
+            invDb.assetCounter++;
             return id;
         }
 
-        public bool AddInventoryItem(InventoryItem item)
+        public string GenerateBatchID()
         {
-            if (item == null) return false;
-            if (FindItem(item.itemID) != null) return false;        // duplicate
-            if (item is DispensableItem)
-                db.dispensableItems.Add((DispensableItem)item);
-            else if (item is IndispensableItem)
-                db.indispensableItems.Add((IndispensableItem)item);
-            else
-                return false;
-            SaveData();
-            return true;
+            string id = "BATCH-" + invDb.batchCounter.ToString("D4");
+            invDb.batchCounter++;
+            return id;
         }
 
+        // ═════════════════════════════════════════════════════════════════════
+        // INVENTORY — ADD  (inventory file)
+        // ═════════════════════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Add a DISPENSABLE batch (pens, paper …).
+        /// Creates ONE DispensableItem record with a unique BATCH-XXXX id.
+        /// </summary>
+        public DispensableItem AddDispensableBatch(string itemName, string catName,
+                                                   int qty, string desc = "",
+                                                   string batchRef = "")
+        {
+            if (string.IsNullOrEmpty(itemName) || qty <= 0) return null;
+            var item = new DispensableItem(GenerateBatchID(), itemName, catName,
+                                           qty, desc, batchRef);
+            invDb.dispensableItems.Add(item);
+            SaveInventory();
+            return item;
+        }
+
+        /// <summary>
+        /// Add INDISPENSABLE units (laptops, mice …).
+        /// Creates N separate IndispensableItem records, each with its own ASSET-XXXX id.
+        /// </summary>
+        public List<IndispensableItem> AddIndispensableUnits(string itemName, string catName,
+                                                              int unitCount, string desc = "",
+                                                              string serialPrefix = "")
+        {
+            if (string.IsNullOrEmpty(itemName) || unitCount <= 0) return null;
+            var created = new List<IndispensableItem>();
+            for (int i = 0; i < unitCount; i++)
+            {
+                string sn = string.IsNullOrEmpty(serialPrefix)
+                    ? ""
+                    : serialPrefix + "-" + (i + 1).ToString("D2");
+                var unit = new IndispensableItem(GenerateAssetID(), itemName, catName, desc, sn);
+                invDb.indispensableItems.Add(unit);
+                created.Add(unit);
+            }
+            SaveInventory();
+            return created;
+        }
+
+        // ═════════════════════════════════════════════════════════════════════
+        // INVENTORY — QUERY
+        // ═════════════════════════════════════════════════════════════════════
         public InventoryItem FindItem(string itemID)
         {
-            var d = db.dispensableItems.Find(x => x.itemID == itemID);
+            var d = invDb.dispensableItems.Find(x => x.itemID == itemID);
             if (d != null) return d;
-            var i = db.indispensableItems.Find(x => x.itemID == itemID);
-            return i;
+            return invDb.indispensableItems.Find(x => x.itemID == itemID);
         }
 
         public List<InventoryItem> GetAllItems()
         {
             var all = new List<InventoryItem>();
-            all.AddRange(db.dispensableItems.ToArray());
-            all.AddRange(db.indispensableItems.ToArray());
+            all.AddRange(invDb.dispensableItems);
+            all.AddRange(invDb.indispensableItems);
             return all;
         }
 
+        /// <summary>Items that can be assigned right now.</summary>
         public List<InventoryItem> GetAvailableItems()
         {
-            var available = new List<InventoryItem>();
-            foreach (var x in db.dispensableItems)
-                if (x.availableQuantity > 0) available.Add(x);
-            foreach (var x in db.indispensableItems)
-                if (x.availableQuantity > 0) available.Add(x);
-            return available;
+            var list = new List<InventoryItem>();
+            foreach (var x in invDb.indispensableItems)
+                if (x.itemStatus == ItemStatus.Good) list.Add(x);
+            foreach (var x in invDb.dispensableItems)
+                if (x.availableQuantity > 0) list.Add(x);
+            return list;
         }
 
-        // ============================================================
-        // ASSIGNMENT OPERATIONS  (Assignment Module)
-        // ============================================================
+        /// <summary>Available indispensable units only.</summary>
+        public List<IndispensableItem> GetAvailableUnits()
+        {
+            return invDb.indispensableItems.FindAll(x => x.itemStatus == ItemStatus.Good);
+        }
+
+        /// <summary>Dispensable batches that still have stock.</summary>
+        public List<DispensableItem> GetAvailableBatches()
+        {
+            return invDb.dispensableItems.FindAll(x => x.availableQuantity > 0);
+        }
+
+        /// <summary>Filter all items by ItemStatus for the inventory status view.</summary>
+        public List<InventoryItem> GetItemsByStatus(ItemStatus status)
+        {
+            var list = new List<InventoryItem>();
+            foreach (var x in invDb.indispensableItems)
+                if (x.itemStatus == status) list.Add(x);
+            foreach (var x in invDb.dispensableItems)
+            {
+                if (status == ItemStatus.Good     && x.availableQuantity > 0) list.Add(x);
+                if (status == ItemStatus.Damaged  && x.damagedQuantity   > 0) list.Add(x);
+                if (status == ItemStatus.Consumed && x.consumedQuantity  > 0) list.Add(x);
+            }
+            return list;
+        }
+
+        // ═════════════════════════════════════════════════════════════════════
+        // INVENTORY — DELETE  (inventory file)
+        // ═════════════════════════════════════════════════════════════════════
+
+        /// <summary>Delete an item only when it has no active assignments.</summary>
+        public bool DeleteItem(string itemID)
+        {
+            if (assignDb.assignments.Exists(a =>
+                    a.itemID == itemID &&
+                    a.assignmentStatus == AssignmentStatus.Assigned))
+                return false;
+            int n = invDb.dispensableItems.RemoveAll(x => x.itemID == itemID);
+            if (n == 0)
+                n = invDb.indispensableItems.RemoveAll(x => x.itemID == itemID);
+            if (n > 0) { SaveInventory(); return true; }
+            return false;
+        }
+
+        // ═════════════════════════════════════════════════════════════════════
+        // ASSIGNMENT OPERATIONS  (assignment file + inventory file)
+        // ═════════════════════════════════════════════════════════════════════
         public string GenerateAssignmentID()
         {
-            string id = "ASN" + db.assignmentCounter.ToString("D4");
-            db.assignmentCounter++;
+            string id = "ASN-" + assignDb.assignmentCounter.ToString("D4");
+            assignDb.assignmentCounter++;
             return id;
         }
 
+        /// <summary>
+        /// Assign an item to an employee.
+        ///   Indispensable unit: qty forced to 1; status → Assigned.
+        ///   Dispensable batch:  deduct qty from available; mark consumed immediately.
+        ///
+        /// Writes to BOTH the inventory file (item quantities / status mutate)
+        /// and the assignment file (new transaction recorded).
+        /// </summary>
         public Assignment AssignItem(string employeeID, string itemID, int quantity)
         {
-            var emp = FindEmployee(employeeID);
+            var emp  = FindEmployee(employeeID);
             var item = FindItem(itemID);
-
             if (emp == null || item == null) return null;
-            if (quantity <= 0 || item.availableQuantity < quantity) return null;
 
-            // reduce available stock
-            item.availableQuantity -= quantity;
-
-            // for dispensable items, mark as consumed immediately
-            if (!item.IsReturnable())
-                item.consumedQuantity += quantity;
+            if (item is IndispensableItem)
+            {
+                var unit = (IndispensableItem)item;
+                if (unit.itemStatus != ItemStatus.Good) return null;
+                unit.itemStatus        = ItemStatus.Assigned;
+                unit.availableQuantity = 0;
+                quantity               = 1;
+            }
+            else
+            {
+                if (quantity <= 0 || item.availableQuantity < quantity) return null;
+                item.availableQuantity -= quantity;
+                item.consumedQuantity  += quantity;
+            }
 
             var a = new Assignment(GenerateAssignmentID(), emp, item, quantity);
-            db.assignments.Add(a);
-            SaveData();
+            assignDb.assignments.Add(a);
+
+            // Inventory mutated → persist inventory; new assignment row → persist assignments.
+            SaveInventory();
+            SaveAssignments();
             return a;
         }
 
-        public List<Assignment> GetActiveAssignments(string employeeID)
-        {
-            return db.assignments.FindAll(
-                a => a.employeeID == employeeID && a.status == AssignmentStatus.Active);
-        }
+        // ═════════════════════════════════════════════════════════════════════
+        // RETURN OPERATIONS  (assignment file + inventory file)
+        // ═════════════════════════════════════════════════════════════════════
 
-        public List<Assignment> GetAllActiveAssignments()
+        /// <summary>
+        /// Process a return. assignmentStatus → Returned; itemCondition set.
+        /// Only Assigned assignments can be returned.
+        /// </summary>
+        public bool ReturnItem(string assignmentID, ItemCondition condition, string remarks)
         {
-            return db.assignments.FindAll(a => a.status == AssignmentStatus.Active);
-        }
-
-        // ============================================================
-        // RETURN OPERATIONS  (Return Module)
-        // ============================================================
-        public bool ReturnItem(string assignmentID, AssignmentStatus returnStatus, string notes)
-        {
-            var a = db.assignments.Find(x => x.assignmentID == assignmentID);
-            if (a == null) return false;
-            if (a.status != AssignmentStatus.Active) return false;
+            var a = assignDb.assignments.Find(x => x.assignmentID == assignmentID);
+            if (a == null || a.assignmentStatus != AssignmentStatus.Assigned) return false;
+            if (condition == ItemCondition.NA) return false;
 
             var item = FindItem(a.itemID);
             if (item == null) return false;
 
-            switch (returnStatus)
+            if (item is IndispensableItem)
             {
-                case AssignmentStatus.ReturnedGood:
-                    item.availableQuantity += a.quantity;
-                    break;
-                case AssignmentStatus.ReturnedDamaged:
-                    item.damagedQuantity += a.quantity;
-                    break;
-                case AssignmentStatus.Consumed:
-                    item.consumedQuantity += a.quantity;
-                    break;
-                default:
-                    return false;
+                var unit = (IndispensableItem)item;
+                switch (condition)
+                {
+                    case ItemCondition.Good:
+                        unit.itemStatus        = ItemStatus.Good;
+                        unit.availableQuantity = 1;
+                        break;
+                    case ItemCondition.Damaged:
+                        unit.itemStatus      = ItemStatus.Damaged;
+                        unit.damagedQuantity = 1;
+                        break;
+                    case ItemCondition.Consumed:
+                        unit.itemStatus       = ItemStatus.Consumed;
+                        unit.consumedQuantity = 1;
+                        break;
+                }
+            }
+            else // DispensableItem
+            {
+                switch (condition)
+                {
+                    case ItemCondition.Good:
+                        item.availableQuantity += a.quantity;
+                        item.consumedQuantity  -= a.quantity;
+                        break;
+                    case ItemCondition.Damaged:
+                        item.damagedQuantity  += a.quantity;
+                        item.consumedQuantity -= a.quantity;
+                        break;
+                    case ItemCondition.Consumed:
+                        break; // already tracked as consumed on assign
+                }
             }
 
-            a.status = returnStatus;
-            a.returnedDate = System.DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            a.notes = notes;
-            SaveData();
+            a.assignmentStatus = AssignmentStatus.Returned;
+            a.itemCondition    = condition;
+            a.returnedDate     = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            a.remarks          = remarks ?? "";
+
+            SaveInventory();
+            SaveAssignments();
             return true;
         }
 
-        // ============================================================
-        // DASHBOARD STATISTICS
-        // ============================================================
-        public int GetTotalEmployeeCount() { return db.employees.Count; }
+        // ═════════════════════════════════════════════════════════════════════
+        // ASSIGNMENT QUERIES
+        // ═════════════════════════════════════════════════════════════════════
+        public List<Assignment> GetActiveAssignmentsForEmployee(string employeeID)
+        {
+            return assignDb.assignments.FindAll(
+                a => a.employeeID == employeeID &&
+                     a.assignmentStatus == AssignmentStatus.Assigned);
+        }
 
-        public int GetTotalItemTypes() { return db.dispensableItems.Count + db.indispensableItems.Count; }
+        public List<Assignment> GetAllActiveAssignments()
+        {
+            return assignDb.assignments.FindAll(
+                a => a.assignmentStatus == AssignmentStatus.Assigned);
+        }
+
+        public List<Assignment> GetAssignmentHistoryForEmployee(string employeeID)
+        {
+            return assignDb.assignments.FindAll(a => a.employeeID == employeeID);
+        }
+
+        /// <summary>Items currently out with a specific employee (for the per-employee view).</summary>
+        public List<Assignment> GetItemsByEmployee(string employeeID)
+        {
+            return assignDb.assignments.FindAll(
+                a => a.employeeID == employeeID &&
+                     a.assignmentStatus == AssignmentStatus.Assigned);
+        }
+
+        // ═════════════════════════════════════════════════════════════════════
+        // DASHBOARD STATISTICS
+        // ═════════════════════════════════════════════════════════════════════
+        public int GetTotalEmployeeCount()  { return empDb.employees.Count; }
+        public int GetTotalCategoryCount()  { return invDb.categories.Count; }
+        public int GetTotalItemTypeCount()  { return invDb.dispensableItems.Count + invDb.indispensableItems.Count; }
+        public int GetActiveAssignmentCount()
+        {
+            return assignDb.assignments.FindAll(
+                a => a.assignmentStatus == AssignmentStatus.Assigned).Count;
+        }
 
         public int GetTotalAvailableQuantity()
         {
-            int total = 0;
-            foreach (var x in db.dispensableItems)   total += x.availableQuantity;
-            foreach (var x in db.indispensableItems) total += x.availableQuantity;
-            return total;
+            int t = 0;
+            foreach (var x in invDb.indispensableItems)
+                if (x.itemStatus == ItemStatus.Good) t++;
+            foreach (var x in invDb.dispensableItems)
+                t += x.availableQuantity;
+            return t;
         }
 
-        public int GetTotalAssignedQuantity()
+        public int GetTotalAssignedCount()
         {
-            int total = 0;
-            foreach (var x in db.indispensableItems) total += x.AssignedQuantity;
-            return total;
+            int t = 0;
+            foreach (var x in invDb.indispensableItems)
+                if (x.itemStatus == ItemStatus.Assigned) t++;
+            foreach (var a in assignDb.assignments)
+                if (a.assignmentStatus == AssignmentStatus.Assigned && !a.isReturnable)
+                    t += a.quantity;
+            return t;
         }
 
-        public int GetTotalDamagedQuantity()
+        public int GetTotalDamagedCount()
         {
-            int total = 0;
-            foreach (var x in db.dispensableItems)   total += x.damagedQuantity;
-            foreach (var x in db.indispensableItems) total += x.damagedQuantity;
-            return total;
+            int t = 0;
+            foreach (var x in invDb.indispensableItems)
+                if (x.itemStatus == ItemStatus.Damaged) t++;
+            foreach (var x in invDb.dispensableItems)
+                t += x.damagedQuantity;
+            return t;
         }
 
-        public int GetTotalConsumedQuantity()
+        public int GetTotalConsumedCount()
         {
-            int total = 0;
-            foreach (var x in db.dispensableItems)   total += x.consumedQuantity;
-            foreach (var x in db.indispensableItems) total += x.consumedQuantity;
-            return total;
+            int t = 0;
+            foreach (var x in invDb.indispensableItems)
+                if (x.itemStatus == ItemStatus.Consumed) t++;
+            foreach (var x in invDb.dispensableItems)
+                t += x.consumedQuantity;
+            return t;
         }
     }
 }
