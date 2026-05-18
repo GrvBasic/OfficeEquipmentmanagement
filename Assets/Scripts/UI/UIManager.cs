@@ -148,7 +148,13 @@ namespace OEMS.UI
         {
             ShowPanel(viewAssignmentsPanel);
             var v = GetComponent<ListViewController>(viewAssignmentsPanel);
-            if (v != null) v.PopulateAssignments();
+            if (v != null)
+            {
+                // Coming in from the dashboard — clear any stale per-employee filter
+                // left over from a previous ShowEmployeeAssignments call.
+                v.ClearEmployeeFilter();
+                v.PopulateAssignments();
+            }
         }
 
         /// <summary>Show items currently held by a specific employee.</summary>
@@ -157,6 +163,15 @@ namespace OEMS.UI
             ShowPanel(employeeItemsPanel);
             var v = GetComponent<ListViewController>(employeeItemsPanel);
             if (v != null) v.PopulateEmployeeItems(employeeID);
+        }
+
+        /// <summary>Show every assignment ever made to a specific employee
+        /// (reuses the Assignment History panel, filtered to one employee).</summary>
+        public void ShowEmployeeAssignments(string employeeID)
+        {
+            ShowPanel(viewAssignmentsPanel);
+            var v = GetComponent<ListViewController>(viewAssignmentsPanel);
+            if (v != null) v.PopulateAssignmentsForEmployee(employeeID);
         }
 
         // ═════════════════════════════════════════════════════════════════════

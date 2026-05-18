@@ -10,12 +10,16 @@ namespace OEMS.UI
 {
     /// <summary>
     /// Generic list / report viewer used by multiple screens:
-    ///   - Employee List         (PopulateEmployees)
-    ///   - Available Inventory   (PopulateInventory)
-    ///   - Assignment History    (PopulateAssignments)
-    ///   - Items by Employee     (PopulateEmployeeItems)
+    ///   - Employee List              (PopulateEmployees)
+    ///   - Available Inventory        (PopulateInventory)
+    ///   - Assignment History         (PopulateAssignments — optionally filtered to one employee)
+    ///   - Items by Employee          (PopulateEmployeeItems)
+    ///   - Employee Assignment list   (PopulateAssignmentsForEmployee — reuses the assignments view)
     ///
-    /// Each employee row has a "View Items" button generated at runtime.
+    /// Employee list rendering: each employee gets ONE EmployeeInfoButton spawned
+    /// into the scroll content. The button's label IS the employee's info card
+    /// (ID, name, dept, email, registered date, active item count). Clicking the
+    /// button opens the Assignment History panel filtered to that employee.
     /// </summary>
     public class ListViewController : MonoBehaviour
     {
@@ -26,8 +30,9 @@ namespace OEMS.UI
         public TextMeshProUGUI contentText;
 
         [Header("Employee Item Buttons Container")]
-        // A ScrollRect content transform where per-employee "View Items" buttons
-        // are spawned. Leave null if using text-only layout.
+        // A ScrollRect content transform where per-employee buttons are spawned.
+        // Two buttons per employee ("View Items" and "View Assignments") are appended.
+        // Leave null if using text-only layout.
         public Transform employeeButtonContainer;
         public GameObject employeeButtonPrefab;     // Button prefab with TMP child
 
@@ -36,7 +41,8 @@ namespace OEMS.UI
         public Button filterActiveButton;       // assignments filter: show Active only
         public Button filterAllButton;          // assignments filter: show All
 
-        private bool showActiveOnly = false;    // for assignment history toggle
+        private bool   showActiveOnly  = false;  // for assignment history toggle
+        private string filterEmployeeID = null;  // when set, PopulateAssignments shows only this employee's records
 
         // ═════════════════════════════════════════════════════════════════════
         private void OnEnable()
@@ -60,6 +66,15 @@ namespace OEMS.UI
 
         // ═════════════════════════════════════════════════════════════════════
         // EMPLOYEE LIST
+        //
+        // The Content transform under Scroll/Viewport is a VerticalLayoutGroup.
+        // For each employee we instantiate one EmployeeInfoButton prefab into it —
+        // the button's label IS the employee info (ID, name, dept, email, registered
+        // date, active item count). Clicking the button opens the Assignment History
+        // panel filtered to that employee (all assignments — active + returned).
+        //
+        // The legacy ContentText (still wired for back-compat) is cleared on each
+        // refresh so it doesn't show stale text behind the buttons.
         // ═════════════════════════════════════════════════════════════════════
         public void PopulateEmployees()
         {
@@ -68,46 +83,55 @@ namespace OEMS.UI
 
             if (titleText) titleText.text = "Registered Employees  (" + dm.Employees.Count + ")";
 
-            // Clear dynamic buttons
+            // ContentText is no longer used for the employee list — the buttons carry
+            // the info now. Clear any stale text so it doesn't render behind them.
+            if (contentText) contentText.text = "";
+
+            // Clear previously-spawned buttons
             ClearEmployeeButtons();
 
-            var sb = new StringBuilder();
             if (dm.Employees.Count == 0)
             {
-                sb.Append("No employees registered yet.");
+                // Fall back to the old text path when there's nothing to show.
+                if (contentText) contentText.text = "No employees registered yet.";
+                return;
             }
-            else
-            {
-                foreach (var e in dm.Employees)
-                {
-                    int activeCount = dm.GetActiveAssignmentsForEmployee(e.employeeID).Count;
-                    sb.AppendLine("<b>" + e.employeeID + "</b>  " + e.FullName);
-                    sb.AppendLine("  Dept: " + e.department
-                                  + (string.IsNullOrEmpty(e.email) ? "" : "  |  " + e.email));
-                    sb.AppendLine("  Registered: " + e.dateRegistered);
-                    sb.AppendLine("  Active items held: <b>" + activeCount + "</b>");
-                    sb.AppendLine();
 
-                    // Spawn a "View Items →" button for this employee
-                    SpawnEmployeeViewButton(e);
-                }
-            }
-            if (contentText) contentText.text = sb.ToString();
+            foreach (var e in dm.Employees)
+                SpawnEmployeeInfoButton(e);
         }
 
-        private void SpawnEmployeeViewButton(Employee emp)
+        /// <summary>
+        /// Spawn ONE info-button for an employee. The button's label shows the full
+        /// employee record; clicking it opens that employee's assignments view.
+        /// </summary>
+        private void SpawnEmployeeInfoButton(Employee emp)
         {
             if (employeeButtonContainer == null || employeeButtonPrefab == null) return;
+
+            var dm = DataManager.Instance;
+            int activeCount = dm != null
+                ? dm.GetActiveAssignmentsForEmployee(emp.employeeID).Count : 0;
 
             var go  = Instantiate(employeeButtonPrefab, employeeButtonContainer);
             var btn = go.GetComponent<Button>();
             var lbl = go.GetComponentInChildren<TextMeshProUGUI>();
 
-            if (lbl) lbl.text = "View Items → " + emp.FullName + " (" + emp.employeeID + ")";
+            if (lbl)
+            {
+                var sb = new StringBuilder();
+                sb.AppendLine("<b>" + emp.employeeID + "</b>   " + emp.FullName);
+                sb.AppendLine("Dept: " + emp.department
+                              + (string.IsNullOrEmpty(emp.email) ? "" : "   |   " + emp.email));
+                sb.AppendLine("Registered: " + emp.dateRegistered);
+                sb.Append("Active items held: <b>" + activeCount + "</b>");
+                lbl.text = sb.ToString();
+            }
             if (btn)
             {
                 string eid = emp.employeeID;   // capture for lambda
-                btn.onClick.AddListener(() => UIManager.Instance.ShowEmployeeItems(eid));
+                btn.onClick.RemoveAllListeners();
+                btn.onClick.AddListener(() => UIManager.Instance.ShowEmployeeAssignments(eid));
             }
         }
 
@@ -190,25 +214,64 @@ namespace OEMS.UI
         }
 
         // ═════════════════════════════════════════════════════════════════════
-        // ASSIGNMENT HISTORY
+        // ASSIGNMENT HISTORY  (supports optional per-employee filter)
         // ═════════════════════════════════════════════════════════════════════
+
+        /// <summary>Show the assignment history filtered to a single employee.</summary>
+        public void PopulateAssignmentsForEmployee(string employeeID)
+        {
+            filterEmployeeID = employeeID;
+            showActiveOnly   = false;   // default to showing all assignments for this employee
+            PopulateAssignments();
+        }
+
+        /// <summary>Clear any active employee filter (called when entering the unfiltered view).</summary>
+        public void ClearEmployeeFilter()
+        {
+            filterEmployeeID = null;
+        }
+
         public void PopulateAssignments()
         {
             var dm = DataManager.Instance;
             if (dm == null) return;
 
-            List<Assignment> list = showActiveOnly
-                ? dm.GetAllActiveAssignments()
-                : dm.Assignments;
+            // Apply employee filter (if any) and active/all filter together.
+            List<Assignment> list;
+            if (!string.IsNullOrEmpty(filterEmployeeID))
+            {
+                list = showActiveOnly
+                    ? dm.GetActiveAssignmentsForEmployee(filterEmployeeID)
+                    : dm.GetAssignmentHistoryForEmployee(filterEmployeeID);
+            }
+            else
+            {
+                list = showActiveOnly
+                    ? dm.GetAllActiveAssignments()
+                    : dm.Assignments;
+            }
 
             string filterLabel = showActiveOnly ? "  [Active only]" : "  [All]";
+            string empLabel    = "";
+            if (!string.IsNullOrEmpty(filterEmployeeID))
+            {
+                var emp = dm.FindEmployee(filterEmployeeID);
+                empLabel = emp != null
+                    ? "  —  " + emp.FullName + " (" + filterEmployeeID + ")"
+                    : "  —  " + filterEmployeeID;
+            }
             if (titleText) titleText.text =
-                "Assignment History  (" + list.Count + ")" + filterLabel;
+                "Assignment History" + empLabel + "  (" + list.Count + ")" + filterLabel;
 
             var sb = new StringBuilder();
             if (list.Count == 0)
             {
-                sb.Append(showActiveOnly ? "No active assignments." : "No assignments yet.");
+                if (!string.IsNullOrEmpty(filterEmployeeID))
+                    sb.Append(showActiveOnly
+                        ? "No active assignments for this employee."
+                        : "No assignments on record for this employee.");
+                else
+                    sb.Append(showActiveOnly ? "No active assignments." : "No assignments yet.");
             }
             else
             {
