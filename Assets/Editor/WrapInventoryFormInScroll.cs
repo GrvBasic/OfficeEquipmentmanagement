@@ -5,18 +5,30 @@ using UnityEditor.SceneManagement;
 
 public static class WrapInventoryFormInScroll
 {
-    /// <summary>
-    /// Wrap Canvas/InventoryPanel/Form inside a ScrollRect so it is scrollable
-    /// on screens that aren't tall enough to fit every field. Idempotent — if
-    /// the wrapper already exists this is a no-op.
-    /// </summary>
+    /// <summary>Default entry point — wraps InventoryPanel/Form.</summary>
     public static string Execute()
     {
-        // Find panel via Canvas root (works even when InventoryPanel is inactive).
+        return WrapPanel("InventoryPanel");
+    }
+
+    /// <summary>Entry point for RegistrationPanel/Form.</summary>
+    public static string ExecuteRegistration()
+    {
+        return WrapPanel("RegistrationPanel");
+    }
+
+    /// <summary>
+    /// Wrap Canvas/{panelName}/Form inside a ScrollRect so it is scrollable
+    /// on screens that aren't tall enough to fit every field. Idempotent —
+    /// if the wrapper already exists this is a no-op.
+    /// </summary>
+    public static string WrapPanel(string panelName)
+    {
+        // Find panel via Canvas root (works even when the panel is inactive).
         var canvas = GameObject.Find("Canvas");
         if (canvas == null) return "Canvas not found";
-        var panelT = canvas.transform.Find("InventoryPanel");
-        if (panelT == null) return "InventoryPanel not found";
+        var panelT = canvas.transform.Find(panelName);
+        if (panelT == null) return panelName + " not found";
         var panel = panelT.gameObject;
 
         // Already wrapped?
@@ -24,7 +36,7 @@ public static class WrapInventoryFormInScroll
             return "Already wrapped — nothing to do.";
 
         var formT = panel.transform.Find("Form");
-        if (formT == null) return "Form not found under InventoryPanel";
+        if (formT == null) return "Form not found under " + panelName;
         var form = formT.gameObject;
 
         // ── 1) Create the ScrollView root ─────────────────────────────────────
@@ -91,13 +103,13 @@ public static class WrapInventoryFormInScroll
         scroll.horizontalScrollbar  = null;
         scroll.verticalScrollbar    = null;
 
-        // Make sure the ScrollView sits before any sibling buttons so the
-        // buttons remain visually on top (they're anchored at the bottom of
-        // the panel, separate from the scrollable area).
-        scrollGO.transform.SetSiblingIndex(panel.transform.Find("Title").GetSiblingIndex() + 1);
+        // Sit just below Title so action buttons remain visually on top.
+        var titleT = panel.transform.Find("Title");
+        if (titleT != null)
+            scrollGO.transform.SetSiblingIndex(titleT.GetSiblingIndex() + 1);
 
         EditorSceneManager.MarkSceneDirty(panel.scene);
 
-        return "Wrapped Form inside ScrollView/Viewport. Form is now scrollable.";
+        return "Wrapped " + panelName + "/Form inside ScrollView/Viewport. Form is now scrollable.";
     }
 }
