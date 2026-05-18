@@ -127,7 +127,7 @@ namespace OEMS.UI
         {
             ShowPanel(returnPanel);
             var rc = GetComponent<ReturnController>(returnPanel);
-            if (rc != null) rc.RefreshList();
+            if (rc != null) rc.RefreshEmployees();
         }
 
         public void ShowViewEmployees()

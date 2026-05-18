@@ -9,17 +9,22 @@ namespace OEMS.UI
 {
     /// <summary>
     /// RETURN MODULE.
-    /// Lists all active (Assigned) assignments. Admin picks one,
-    /// selects the item condition (Good / Damaged / Consumed), and confirms.
+    /// New two-step selection design:
+    ///   1) Employee dropdown   — lists employees who currently hold one or
+    ///                            more indispensable (returnable) items.
+    ///   2) Item dropdown       — lists the indispensable items currently
+    ///                            assigned to the selected employee.
+    /// Admin picks one item, chooses its condition (Good / Damaged / Consumed),
+    /// adds optional remarks, then confirms the return.
     ///
-    /// Uses the new split model:
-    ///   assignmentStatus → Returned
-    ///   itemCondition    → Good / Damaged / Consumed
+    /// Note: dispensable items are consumed on assign and are NOT returnable,
+    /// so they are intentionally excluded from this flow.
     /// </summary>
     public class ReturnController : MonoBehaviour
     {
         [Header("Selection")]
-        public TMP_Dropdown     assignmentDropdown;
+        public TMP_Dropdown     employeeDropdown;
+        public TMP_Dropdown     itemDropdown;
         public TextMeshProUGUI  assignmentDetailText;   // shows selected assignment details
 
         [Header("Condition")]
@@ -34,13 +39,15 @@ namespace OEMS.UI
         public Button submitButton;
         public Button backButton;
 
-        private List<Assignment> currentList = new List<Assignment>();
+        // Cached selection state
+        private List<Employee>   employeesWithReturns = new List<Employee>();
+        private List<Assignment> currentEmployeeItems = new List<Assignment>();
 
         // ═════════════════════════════════════════════════════════════════════
         private void OnEnable()
         {
             HookUpButtons();
-            RefreshList();
+            RefreshEmployees();
         }
 
         private void HookUpButtons()
@@ -55,65 +62,135 @@ namespace OEMS.UI
                 backButton.onClick.RemoveAllListeners();
                 backButton.onClick.AddListener(() => UIManager.Instance.ShowDashboard());
             }
-            if (assignmentDropdown)
+            if (employeeDropdown)
             {
-                assignmentDropdown.onValueChanged.RemoveAllListeners();
-                assignmentDropdown.onValueChanged.AddListener(OnSelectionChanged);
+                employeeDropdown.onValueChanged.RemoveAllListeners();
+                employeeDropdown.onValueChanged.AddListener(OnEmployeeChanged);
+            }
+            if (itemDropdown)
+            {
+                itemDropdown.onValueChanged.RemoveAllListeners();
+                itemDropdown.onValueChanged.AddListener(OnItemChanged);
             }
         }
 
-        public void RefreshList()
+        // ─────────────────────────────────────────────────────────────────────
+        /// <summary>Populate the employee dropdown with employees that hold at
+        /// least one active indispensable assignment.</summary>
+        public void RefreshEmployees()
         {
             var dm = DataManager.Instance;
             if (dm == null) return;
 
-            // Only returnable (indispensable) active assignments show here
-            // Dispensable items are already consumed on assign, but we still let
-            // admin process them if needed (mark notes etc.)
-            currentList = dm.GetAllActiveAssignments();
-
-            if (assignmentDropdown != null)
+            // Only employees with at least one active *returnable* assignment.
+            employeesWithReturns = new List<Employee>();
+            foreach (var emp in dm.Employees)
             {
-                assignmentDropdown.ClearOptions();
+                var actives = dm.GetActiveAssignmentsForEmployee(emp.employeeID);
+                bool hasReturnable = actives.Exists(a => a.isReturnable);
+                if (hasReturnable) employeesWithReturns.Add(emp);
+            }
+
+            if (employeeDropdown != null)
+            {
+                employeeDropdown.ClearOptions();
                 var opts = new List<string>();
-                if (currentList.Count == 0)
+                if (employeesWithReturns.Count == 0)
                 {
-                    opts.Add("-- No active assignments --");
+                    opts.Add("-- No employees with returnable items --");
                 }
                 else
                 {
-                    foreach (var a in currentList)
-                        opts.Add(string.Format("{0}  |  {1}  →  {2}  (x{3})",
-                            a.assignmentID, a.itemID, a.employeeFullName, a.quantity));
+                    foreach (var e in employeesWithReturns)
+                        opts.Add(e.employeeID + "  -  " + e.FullName);
                 }
-                assignmentDropdown.AddOptions(opts);
+                employeeDropdown.AddOptions(opts);
+                employeeDropdown.value = 0;
+                employeeDropdown.RefreshShownValue();
             }
 
+            // Reset condition + remarks
             if (goodToggle)   goodToggle.isOn = true;
             if (remarksInput) remarksInput.text = "";
+
+            RefreshItemsForCurrentEmployee();
+        }
+
+        /// <summary>Populate the items dropdown with the indispensable assignments
+        /// for the currently-selected employee.</summary>
+        private void RefreshItemsForCurrentEmployee()
+        {
+            currentEmployeeItems.Clear();
+
+            var dm = DataManager.Instance;
+            if (dm != null && employeesWithReturns.Count > 0 && employeeDropdown != null)
+            {
+                int idx = employeeDropdown.value;
+                if (idx >= 0 && idx < employeesWithReturns.Count)
+                {
+                    var emp = employeesWithReturns[idx];
+                    var actives = dm.GetActiveAssignmentsForEmployee(emp.employeeID);
+                    // Only indispensable (returnable) items belong in the return flow.
+                    foreach (var a in actives)
+                        if (a.isReturnable) currentEmployeeItems.Add(a);
+                }
+            }
+
+            if (itemDropdown != null)
+            {
+                itemDropdown.ClearOptions();
+                var opts = new List<string>();
+                if (currentEmployeeItems.Count == 0)
+                {
+                    opts.Add("-- No indispensable items assigned --");
+                }
+                else
+                {
+                    foreach (var a in currentEmployeeItems)
+                        opts.Add(string.Format("{0}  -  {1}  [{2}]",
+                            a.itemID, a.itemName, a.assignmentID));
+                }
+                itemDropdown.AddOptions(opts);
+                itemDropdown.value = 0;
+                itemDropdown.RefreshShownValue();
+            }
+
             UpdateDetailText();
         }
 
-        private void OnSelectionChanged(int _) { UpdateDetailText(); }
+        private void OnEmployeeChanged(int _)
+        {
+            RefreshItemsForCurrentEmployee();
+        }
+
+        private void OnItemChanged(int _)
+        {
+            UpdateDetailText();
+        }
 
         private void UpdateDetailText()
         {
             if (assignmentDetailText == null) return;
-            int idx = assignmentDropdown ? assignmentDropdown.value : -1;
-            if (idx < 0 || idx >= currentList.Count) { assignmentDetailText.text = ""; return; }
+            if (currentEmployeeItems.Count == 0)
+            {
+                assignmentDetailText.text = "<i>Select an employee with active indispensable items.</i>";
+                return;
+            }
 
-            var a = currentList[idx];
+            int idx = itemDropdown ? itemDropdown.value : -1;
+            if (idx < 0 || idx >= currentEmployeeItems.Count) { assignmentDetailText.text = ""; return; }
+
+            var a = currentEmployeeItems[idx];
             assignmentDetailText.text = string.Format(
                 "<b>{0}</b>\n" +
                 "Item: {1} ({2})\n" +
                 "Employee: {3} ({4})\n" +
                 "Qty: {5}   Issued: {6}\n" +
-                "Type: {7}",
+                "Type: Indispensable (returnable)",
                 a.assignmentID,
                 a.itemName, a.itemID,
                 a.employeeFullName, a.employeeID,
-                a.quantity, a.assignedDate,
-                a.isReturnable ? "Indispensable (returnable)" : "Dispensable (consumable)");
+                a.quantity, a.assignedDate);
         }
 
         // ─────────────────────────────────────────────────────────────────────
@@ -122,16 +199,21 @@ namespace OEMS.UI
             var dm = DataManager.Instance;
             if (dm == null) return;
 
-            if (currentList.Count == 0)
+            if (employeesWithReturns.Count == 0)
             {
-                UIManager.Instance.ShowToast("No active assignments to process.");
+                UIManager.Instance.ShowToast("No employees have returnable items.");
+                return;
+            }
+            if (currentEmployeeItems.Count == 0)
+            {
+                UIManager.Instance.ShowToast("Selected employee has no items to return.");
                 return;
             }
 
-            int idx = assignmentDropdown ? assignmentDropdown.value : -1;
-            if (idx < 0 || idx >= currentList.Count)
+            int itemIdx = itemDropdown ? itemDropdown.value : -1;
+            if (itemIdx < 0 || itemIdx >= currentEmployeeItems.Count)
             {
-                UIManager.Instance.ShowToast("Invalid selection.");
+                UIManager.Instance.ShowToast("Invalid item selection.");
                 return;
             }
 
@@ -140,7 +222,7 @@ namespace OEMS.UI
             if (damagedToggle  && damagedToggle.isOn)  condition = ItemCondition.Damaged;
             else if (consumedToggle && consumedToggle.isOn) condition = ItemCondition.Consumed;
 
-            var a       = currentList[idx];
+            var a       = currentEmployeeItems[itemIdx];
             string rmks = remarksInput ? remarksInput.text : "";
 
             // Show confirm dialog before committing
@@ -160,8 +242,8 @@ namespace OEMS.UI
             if (dm.ReturnItem(assignmentID, condition, remarks))
             {
                 UIManager.Instance.ShowToast(
-                    "\"" + itemName + "\" returned — " + condLabel + ".");
-                RefreshList();
+                    "\"" + itemName + "\" returned - " + condLabel + ".");
+                RefreshEmployees();
             }
             else
             {
