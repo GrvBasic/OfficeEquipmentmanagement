@@ -41,6 +41,13 @@ namespace OEMS.UI
         public Button filterActiveButton;       // assignments filter: show Active only
         public Button filterAllButton;          // assignments filter: show All
 
+        [Header("Inventory Status Filter Buttons")]
+        public Button filterAvailableButton;    // inventory filter: Good / available stock
+        public Button filterAssignedButton;     // inventory filter: currently assigned
+        public Button filterDamagedButton;      // inventory filter: damaged
+        public Button filterConsumedButton;     // inventory filter: consumed
+        public Button filterAllInventoryButton; // inventory filter: show every record (optional)
+
         private bool   showActiveOnly  = false;  // for assignment history toggle
         private string filterEmployeeID = null;  // when set, PopulateAssignments shows only this employee's records
 
@@ -61,6 +68,33 @@ namespace OEMS.UI
             {
                 filterAllButton.onClick.RemoveAllListeners();
                 filterAllButton.onClick.AddListener(() => { showActiveOnly = false; PopulateAssignments(); });
+            }
+
+            // Inventory status filters (only present on the View Inventory panel).
+            if (filterAvailableButton)
+            {
+                filterAvailableButton.onClick.RemoveAllListeners();
+                filterAvailableButton.onClick.AddListener(() => PopulateInventoryByStatus(ItemStatus.Good));
+            }
+            if (filterAssignedButton)
+            {
+                filterAssignedButton.onClick.RemoveAllListeners();
+                filterAssignedButton.onClick.AddListener(() => PopulateInventoryByStatus(ItemStatus.Assigned));
+            }
+            if (filterDamagedButton)
+            {
+                filterDamagedButton.onClick.RemoveAllListeners();
+                filterDamagedButton.onClick.AddListener(() => PopulateInventoryByStatus(ItemStatus.Damaged));
+            }
+            if (filterConsumedButton)
+            {
+                filterConsumedButton.onClick.RemoveAllListeners();
+                filterConsumedButton.onClick.AddListener(() => PopulateInventoryByStatus(ItemStatus.Consumed));
+            }
+            if (filterAllInventoryButton)
+            {
+                filterAllInventoryButton.onClick.RemoveAllListeners();
+                filterAllInventoryButton.onClick.AddListener(() => PopulateInventory());
             }
         }
 
@@ -199,6 +233,76 @@ namespace OEMS.UI
             }
 
             if (contentText) contentText.text = sb.ToString();
+        }
+
+        /// <summary>
+        /// Filtered inventory view — shows only items matching a given status.
+        ///   Good     → "Available"
+        ///   Assigned → currently issued (indispensable units only)
+        ///   Damaged  → damaged
+        ///   Consumed → consumed / used up
+        /// Indispensable units match on their itemStatus; dispensable batches
+        /// match when they carry stock in the corresponding bucket.
+        /// </summary>
+        public void PopulateInventoryByStatus(ItemStatus status)
+        {
+            var dm = DataManager.Instance;
+            if (dm == null) return;
+
+            var items = dm.GetItemsByStatus(status);
+            string label = StatusLabel(status);
+            if (titleText) titleText.text = label + " Inventory  (" + items.Count + ")";
+
+            var sb = new StringBuilder();
+            if (items.Count == 0)
+            {
+                sb.Append("No items with status \"" + label + "\".");
+            }
+            else
+            {
+                string colour = StatusColour(status);
+                foreach (var i in items)
+                {
+                    if (i is IndispensableItem indItem)
+                    {
+                        sb.AppendLine(string.Format(
+                            "<color={0}><b>{1}</b>  {2}  [{3}]</color>",
+                            colour, indItem.itemID, indItem.itemName, indItem.categoryName));
+                        if (!string.IsNullOrEmpty(indItem.serialNumber))
+                            sb.AppendLine("  Serial: " + indItem.serialNumber);
+                        sb.AppendLine("  Added: " + indItem.dateAdded);
+                    }
+                    else if (i is DispensableItem disItem)
+                    {
+                        int qty = status == ItemStatus.Good     ? disItem.availableQuantity
+                                : status == ItemStatus.Damaged  ? disItem.damagedQuantity
+                                : status == ItemStatus.Consumed ? disItem.consumedQuantity
+                                : 0;
+                        sb.AppendLine(string.Format(
+                            "<color={0}><b>{1}</b>  {2}  [{3}]  —  {4}: {5}</color>",
+                            colour, disItem.itemID, disItem.itemName, disItem.categoryName,
+                            label, qty));
+                        if (!string.IsNullOrEmpty(disItem.batchReference))
+                            sb.AppendLine("  Ref: " + disItem.batchReference);
+                        sb.AppendLine("  Added: " + disItem.dateAdded);
+                    }
+                    sb.AppendLine();
+                }
+            }
+
+            if (contentText) contentText.text = sb.ToString();
+        }
+
+        private static string StatusLabel(ItemStatus s)
+        {
+            switch (s)
+            {
+                case ItemStatus.Good:     return "Available";
+                case ItemStatus.Assigned: return "Assigned";
+                case ItemStatus.Damaged:  return "Damaged";
+                case ItemStatus.Consumed: return "Consumed";
+                default:                  return s.ToString();
+            }
         }
 
         private static string StatusColour(ItemStatus s)
