@@ -16,5 +16,9 @@ namespace OEMS.Models
     {
         public List<Employee> employees       = new List<Employee>();
         public int            employeeCounter = 1;   // → EMP-XXXX
+
+        // Known department names, accumulated as employees are registered.
+        // Persisted so previously-used departments reappear in the dropdown.
+        public List<string>   departments     = new List<string>();
     }
 }

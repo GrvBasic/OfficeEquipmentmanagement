@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.UI;
 using TMPro;
@@ -17,7 +18,14 @@ namespace OEMS.UI
         public TMP_InputField firstNameInput;
         public TMP_InputField lastNameInput;
         public TMP_InputField emailInput;
-        public TMP_InputField departmentInput;
+
+        [Header("Department")]
+        public TMP_Dropdown   departmentDropdown;   // saved departments + a "Custom" option
+        public TMP_InputField departmentInput;       // custom-entry field (shown only for "Custom")
+
+        // Label shown for the custom option in the dropdown.
+        private const string CUSTOM_OPTION = "+ Add new department…";
+        private int customOptionIndex = -1;
 
         [Header("Display")]
         public TextMeshProUGUI generatedIdText;
@@ -64,6 +72,12 @@ namespace OEMS.UI
                 emailInput.onValueChanged.RemoveAllListeners();
                 emailInput.onValueChanged.AddListener(OnEmailChanged);
             }
+            // Department dropdown selection toggles the custom-entry field.
+            if (departmentDropdown)
+            {
+                departmentDropdown.onValueChanged.RemoveAllListeners();
+                departmentDropdown.onValueChanged.AddListener(OnDepartmentChanged);
+            }
         }
 
         private void ResetForm()
@@ -74,11 +88,77 @@ namespace OEMS.UI
             if (departmentInput) departmentInput.text = "";
             if (emailValidationText) emailValidationText.text = "";
 
+            PopulateDepartments();
+
             if (DataManager.Instance != null)
             {
                 pendingID = DataManager.Instance.GenerateEmployeeID();
                 if (generatedIdText) generatedIdText.text = "New ID: " + pendingID;
             }
+        }
+
+        // ─────────────────────────────────────────────────────────────────────
+        // DEPARTMENT DROPDOWN
+        // ─────────────────────────────────────────────────────────────────────
+
+        /// <summary>Fill the dropdown with all saved departments + a trailing
+        /// "Custom" option. Defaults to the first saved department, or to Custom
+        /// when nothing has been saved yet.</summary>
+        private void PopulateDepartments()
+        {
+            if (departmentDropdown == null) return;
+
+            var dm = DataManager.Instance;
+            List<string> depts = dm != null ? dm.GetDepartments() : new List<string>();
+
+            var options = new List<string>(depts);
+            options.Add(CUSTOM_OPTION);
+            customOptionIndex = options.Count - 1;
+
+            departmentDropdown.onValueChanged.RemoveListener(OnDepartmentChanged);
+            departmentDropdown.ClearOptions();
+            departmentDropdown.AddOptions(options);
+            // No saved departments → start on Custom so the user can type one in.
+            departmentDropdown.value = depts.Count > 0 ? 0 : customOptionIndex;
+            departmentDropdown.RefreshShownValue();
+            departmentDropdown.onValueChanged.AddListener(OnDepartmentChanged);
+
+            UpdateCustomFieldVisibility();
+        }
+
+        private void OnDepartmentChanged(int _)
+        {
+            UpdateCustomFieldVisibility();
+        }
+
+        private bool IsCustomSelected()
+        {
+            return departmentDropdown != null &&
+                   departmentDropdown.value == customOptionIndex;
+        }
+
+        /// <summary>Show the custom-entry input only when "Custom" is selected.</summary>
+        private void UpdateCustomFieldVisibility()
+        {
+            if (departmentInput == null) return;
+            bool custom = IsCustomSelected();
+            departmentInput.gameObject.SetActive(custom);
+            if (!custom) departmentInput.text = "";
+        }
+
+        /// <summary>Department name from the custom field (if Custom) or the
+        /// selected dropdown entry otherwise.</summary>
+        private string ResolveDepartment()
+        {
+            if (IsCustomSelected())
+                return departmentInput ? departmentInput.text.Trim() : "";
+
+            if (departmentDropdown != null &&
+                departmentDropdown.value >= 0 &&
+                departmentDropdown.value < departmentDropdown.options.Count)
+                return departmentDropdown.options[departmentDropdown.value].text.Trim();
+
+            return "";
         }
 
         // Live feedback while typing email
@@ -106,7 +186,7 @@ namespace OEMS.UI
             string first = firstNameInput  ? firstNameInput.text.Trim()  : "";
             string last  = lastNameInput   ? lastNameInput.text.Trim()   : "";
             string email = emailInput      ? emailInput.text.Trim()      : "";
-            string dept  = departmentInput ? departmentInput.text.Trim() : "";
+            string dept  = ResolveDepartment();
 
             // ── Validation ──
             if (string.IsNullOrEmpty(first))
@@ -121,9 +201,14 @@ namespace OEMS.UI
             }
             if (string.IsNullOrEmpty(dept))
             {
-                UIManager.Instance.ShowToast("Department is required.");
+                UIManager.Instance.ShowToast(IsCustomSelected()
+                    ? "Enter the new department name."
+                    : "Department is required.");
                 return;
             }
+
+            // Persist a brand-new department so it appears next time.
+            if (IsCustomSelected()) dm.AddDepartment(dept);
             if (!string.IsNullOrEmpty(email) && !DataManager.IsValidEmail(email))
             {
                 UIManager.Instance.ShowToast("Email format is invalid.");

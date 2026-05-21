@@ -179,8 +179,57 @@ namespace OEMS.Core
             if (e == null || string.IsNullOrEmpty(e.employeeID)) return false;
             if (FindEmployee(e.employeeID) != null) return false;
             empDb.employees.Add(e);
+            RegisterDepartment(e.department);   // remember the department for next time
             SaveEmployees();
             return true;
+        }
+
+        // ── DEPARTMENT REGISTRY (employee file) ───────────────────────────────
+
+        /// <summary>
+        /// All known department names, sorted alphabetically. Includes any used by
+        /// existing employees plus any explicitly added through the registry.
+        /// </summary>
+        public List<string> GetDepartments()
+        {
+            EnsureDepartmentsBackfilled();
+            var list = new List<string>(empDb.departments);
+            list.Sort(System.StringComparer.OrdinalIgnoreCase);
+            return list;
+        }
+
+        /// <summary>
+        /// Add a department name to the registry if it isn't already present
+        /// (case-insensitive). Persists immediately. Returns true if newly added.
+        /// </summary>
+        public bool AddDepartment(string name)
+        {
+            bool added = RegisterDepartment(name);
+            if (added) SaveEmployees();
+            return added;
+        }
+
+        /// <summary>In-memory add without saving (callers decide when to persist).</summary>
+        private bool RegisterDepartment(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return false;
+            name = name.Trim();
+            if (empDb.departments == null) empDb.departments = new List<string>();
+            if (empDb.departments.Exists(d => string.Equals(d, name,
+                    System.StringComparison.OrdinalIgnoreCase)))
+                return false;
+            empDb.departments.Add(name);
+            return true;
+        }
+
+        /// <summary>Make sure every department used by an existing employee is in the registry.</summary>
+        private void EnsureDepartmentsBackfilled()
+        {
+            if (empDb.departments == null) empDb.departments = new List<string>();
+            bool changed = false;
+            foreach (var emp in empDb.employees)
+                if (RegisterDepartment(emp.department)) changed = true;
+            if (changed) SaveEmployees();
         }
 
        
