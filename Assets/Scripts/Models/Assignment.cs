@@ -25,28 +25,22 @@ namespace OEMS.Models
         Consumed    // Used up (dispensable) or permanently lost → removed from stock
     }
 
-    /// <summary>
-    /// Records every transaction of items being given to or returned by an employee.
-    /// Bridge / linking entity between Employee and Inventory (ER diagram).
-    ///
-    /// Key design: assignmentStatus (Assigned/Returned) and itemCondition
-    /// (Good/Damaged/Consumed/NA) are TWO SEPARATE fields, matching the ER schema.
-    /// </summary>
+
     [Serializable]
     public class Assignment
     {
         public string           assignmentID;
         public string           employeeID;
-        public string           employeeFullName;    // denormalised for display
-        public string           itemID;              // ASSET-XXXX or BATCH-XXXX
-        public string           itemName;            // denormalised for display
-        public string           categoryName;        // denormalised for display
-        public bool             isReturnable;        // true = indispensable unit
-        public int              quantity;            // 1 for indispensable, N for dispensable
+        public string           employeeFullName;    
+        public string           itemID;             
+        public string           itemName;           
+        public string           categoryName;       
+        public bool             isReturnable;       
+        public int              quantity;           
         public string           assignedDate;
-        public string           returnedDate;        // empty until returned
+        public string           returnedDate;        
         public AssignmentStatus assignmentStatus;
-        public ItemCondition    itemCondition;       // NA until returned
+        public ItemCondition    itemCondition;      
         public string           remarks;
 
         public Assignment() { }
